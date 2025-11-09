@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -101,6 +102,8 @@ class Playground(commands.Cog):
             try:
                 async with self.session.get("https://crates.io/api/v1/crates", params=params) as r:
                     if r.status != 200:
+                        if r.status == 429:
+                            raise commands.CommandError("crates.io rate-limited the request. Try again later.")
                         raise commands.CommandError(f"Crate search failed (status {r.status}). Try again later.")
 
                     try:
@@ -110,7 +113,7 @@ class Playground(commands.Cog):
 
                     crates = response.get("crates", []) or []
                     if not crates:
-                        await ctx.send(f"No crate found for `{escape_markdown(query)}`.")
+                        await ctx.send(f"No crate found for `{escape_mentions(escape_markdown(query))}`.")
                         return
 
                     crate = crates[0]
@@ -122,7 +125,7 @@ class Playground(commands.Cog):
                     if len(description) > 2048:
                         description = description[:2045] + "..."
 
-                    url = f"https://crates.io/crates/{name}"
+                    url = f"https://crates.io/crates/{quote(name)}"
 
                     embed = discord.Embed(
                         title=f"📦 {name} (v{version})",
@@ -141,7 +144,7 @@ class Playground(commands.Cog):
                     if repository:
                         embed.add_field(name="Repository", value=repository, inline=False)
                     if license_:
-                        embed.add_field(name="License", value=license_, inline=True)
+                        embed.add_field(name="License", value=escape_mentions(license_), inline=True)
                     if downloads is not None:
                         embed.add_field(name="Downloads", value=f"{downloads:,}", inline=True)
 
@@ -155,7 +158,6 @@ class Playground(commands.Cog):
                             embed.set_footer(text=f"Last updated: {updated_at}")
                     else:
                         embed.set_footer(text="Last updated: N/A")
-                    embed.set_footer(text=f"Last updated: {crate.get('updated_at', 'N/A')}")
 
                     await ctx.send(embed=embed)
             except asyncio.TimeoutError:
