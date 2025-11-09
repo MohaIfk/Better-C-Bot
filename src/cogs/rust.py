@@ -1,10 +1,13 @@
+import asyncio
 import json
 import logging
 import re
+from datetime import datetime
 
 import aiohttp
 import discord
 from discord.ext import commands
+from discord.utils import escape_markdown, escape_mentions
 
 log = logging.getLogger(__name__)
 err_regex = re.compile(r"^error(\[.*\])*:", re.MULTILINE)
@@ -87,6 +90,86 @@ class Playground(commands.Cog):
     async def go(self, ctx: commands.Context):
         """Evaluates Go code"""
         await ctx.send("No")
+
+    @commands.command()
+    async def crate(self, ctx: commands.Context, *, query: str):
+        """Searches crates.io for a crate."""
+        # We only want the top result
+        params = {"q": query, "per_page": 1}
+
+        async with ctx.typing():
+            try:
+                async with self.session.get("https://crates.io/api/v1/crates", params=params) as r:
+                    if r.status != 200:
+                        raise commands.CommandError(f"Crate search failed (status {r.status}). Try again later.")
+
+                    try:
+                        response = await r.json()
+                    except aiohttp.ContentTypeError:
+                        raise commands.CommandError("Crate search returned unexpected content. Try again later.")
+
+                    crates = response.get("crates", []) or []
+                    if not crates:
+                        await ctx.send(f"No crate found for `{escape_markdown(query)}`.")
+                        return
+
+                    crate = crates[0]
+                    name = crate.get("name", "unknown")
+                    version = crate.get("max_stable_version") or crate.get("max_version", "unknown")
+                    description = crate.get("description") or "No description provided."
+                    # sanitize/escape to avoid weird markdown/mentions
+                    description = escape_mentions(escape_markdown(description))
+                    if len(description) > 2048:
+                        description = description[:2045] + "..."
+
+                    url = f"https://crates.io/crates/{name}"
+
+                    embed = discord.Embed(
+                        title=f"📦 {name} (v{version})",
+                        url=url,
+                        description=description,
+                        color=discord.Color.orange()
+                    )
+
+                    homepage = crate.get("homepage")
+                    repository = crate.get("repository")
+                    license_ = crate.get("license")
+                    downloads = crate.get("downloads")
+
+                    if homepage:
+                        embed.add_field(name="Homepage", value=homepage, inline=False)
+                    if repository:
+                        embed.add_field(name="Repository", value=repository, inline=False)
+                    if license_:
+                        embed.add_field(name="License", value=license_, inline=True)
+                    if downloads is not None:
+                        embed.add_field(name="Downloads", value=f"{downloads:,}", inline=True)
+
+                    updated_at = crate.get("updated_at")
+                    if updated_at:
+                        # crates API uses RFC3339-ish timestamps; parse fallback safely
+                        try:
+                            dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                            embed.set_footer(text=f"Last updated: {dt.strftime('%Y-%m-%d %H:%M UTC')}")
+                        except Exception:
+                            embed.set_footer(text=f"Last updated: {updated_at}")
+                    else:
+                        embed.set_footer(text="Last updated: N/A")
+                    embed.set_footer(text=f"Last updated: {crate.get('updated_at', 'N/A')}")
+
+                    await ctx.send(embed=embed)
+            except asyncio.TimeoutError:
+                await ctx.send("Request timed out. Try again later.")
+            except aiohttp.ClientError as exc:
+                # network-level errors
+                await ctx.send("Network error when talking to crates.io. Try again later.")
+                log.exception(exc)
+            except commands.CommandError as exc:
+                # expected command-level errors
+                await ctx.send(str(exc))
+            except Exception as exc:
+                log.exception(exc)
+                await ctx.send("An unexpected error occurred while searching crates.io.")
 
     @commands.Cog.listener()
     async def on_message_edit(self, before, after):
